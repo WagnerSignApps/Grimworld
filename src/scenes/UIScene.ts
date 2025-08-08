@@ -19,11 +19,13 @@ export class UIScene extends Phaser.Scene {
   private survivorPanel!: Phaser.GameObjects.Container;
   private survivorListContainer!: Phaser.GameObjects.Container;
   private survivorMask!: Phaser.Display.Masks.GeometryMask;
+  private survivorMaskGfx!: Phaser.GameObjects.Graphics;
 
   // Event log
   private eventLogContainer!: Phaser.GameObjects.Container;
   private eventEntries: Phaser.GameObjects.Text[] = [];
   private eventLogMask!: Phaser.Display.Masks.GeometryMask;
+  private eventMaskGfx!: Phaser.GameObjects.Graphics;
   private eventScrollOffset: number = 0;
 
   // Tooltips
@@ -194,8 +196,13 @@ export class UIScene extends Phaser.Scene {
     this.survivorListContainer = this.add.container(0, 0);
     this.survivorPanel.add(this.survivorListContainer);
 
-    const maskShape = this.add.rectangle(width - 110, height / 2 + 10, 200, height - 170, 0xffffff, 0);
-    this.survivorMask = new Phaser.Display.Masks.GeometryMask(this, maskShape);
+    // Mask for scrollable survivor list (use Graphics for GeometryMask)
+    const sGfx = this.add.graphics();
+    sGfx.fillStyle(0xffffff, 1);
+    // Mask region aligns with survivorPanel area (x: width - 220, y: 100)
+    sGfx.fillRect(width - 220, 100, 200, height - 170);
+    this.survivorMaskGfx = sGfx;
+    this.survivorMask = new Phaser.Display.Masks.GeometryMask(this, sGfx);
     this.survivorPanel.setMask(this.survivorMask);
 
     // Scroll wheel
@@ -240,8 +247,12 @@ export class UIScene extends Phaser.Scene {
 
     // Scrollable container with mask
     this.eventLogContainer = this.add.container(250, height - 112).setDepth(110);
-    const maskRect = this.add.rectangle(350, height - 94, 540, 60, 0xffffff, 0);
-    this.eventLogMask = new Phaser.Display.Masks.GeometryMask(this, maskRect);
+    const eGfx = this.add.graphics();
+    eGfx.fillStyle(0xffffff, 1);
+    // Mask region aligns with eventLogContainer origin (x: 250, y: height - 112)
+    eGfx.fillRect(250, height - 112, 540, 60);
+    this.eventMaskGfx = eGfx;
+    this.eventLogMask = new Phaser.Display.Masks.GeometryMask(this, eGfx);
     this.eventLogContainer.setMask(this.eventLogMask);
 
     // Scroll
@@ -451,6 +462,136 @@ export class UIScene extends Phaser.Scene {
         // Color code: green > 50, yellow 20-50, red < 20
         const col = amount > 50 ? '#27ae60' : amount >= 20 ? '#f39c12' : '#e74c3c';
         textElement.setColor(col);
+      }
+    });
+  }
+  // Responsive relayout
+  private relayout(width: number, height: number) {
+    // Panels
+    this.topPanelBg.setPosition(width / 2, 30).setSize(width, 64);
+    this.bottomPanelBg.setPosition(width / 2, height - 40).setSize(width, 84);
+    this.sidePanelBg.setPosition(width - 110, height / 2).setSize(220, height - 120);
+
+    // Rebuild survivor mask
+    if (this.survivorMaskGfx) {
+      this.survivorMaskGfx.clear();
+      this.survivorMaskGfx.fillStyle(0xffffff, 1);
+      this.survivorMaskGfx.fillRect(width - 220, 100, 200, height - 170);
+    }
+    // Rebuild event log mask
+    if (this.eventMaskGfx) {
+      this.eventMaskGfx.clear();
+      this.eventMaskGfx.fillStyle(0xffffff, 1);
+      this.eventMaskGfx.fillRect(250, height - 112, 540, 60);
+    }
+  }
+
+  private layoutEventLog() {
+    let y = this.eventScrollOffset;
+    this.eventEntries.forEach(t => {
+      t.setPosition(0, y);
+      y += t.height + 4;
+    });
+  }
+
+  private pretty(id: string): string {
+    return id.charAt(0).toUpperCase() + id.slice(1);
+  }
+
+  private createTooltip() {
+    this.tooltipBg = this.add.rectangle(0, 0, 10, 10, 0x000000, 0.85)
+      .setStrokeStyle(1, 0x666666)
+      .setDepth(10000)
+      .setVisible(false);
+    this.tooltipText = this.add.text(0, 0, '', {
+      fontSize: '10px',
+      color: '#ecf0f1',
+      fontFamily: this.fontFamily,
+      wordWrap: { width: 260 }
+    }).setDepth(10001).setVisible(false);
+  }
+
+  private showTooltip(text: string, x: number, y: number) {
+    this.tooltipText.setText(text);
+    const pad = 6;
+    const tw = this.tooltipText.width + pad * 2;
+    const th = this.tooltipText.height + pad * 2;
+    this.tooltipBg.setSize(tw, th);
+    this.tooltipBg.setPosition(x + tw / 2 + 8, y - th / 2);
+    this.tooltipText.setPosition(this.tooltipBg.x - tw / 2 + pad, this.tooltipBg.y - th / 2 + pad);
+    this.tooltipBg.setVisible(true);
+    this.tooltipText.setVisible(true);
+  }
+
+  private hideTooltip() {
+    this.tooltipBg.setVisible(false);
+    this.tooltipText.setVisible(false);
+  }
+
+  private showResourceTooltip(resource: string, x: number, y: number) {
+    const game = this.scene.get('GameScene') as any;
+    const rm = game?.getResourceManager?.();
+    const type = rm?.getResourceType?.(resource);
+    const amount = rm?.getResource?.(resource) ?? 0;
+    const txt = type ? `${this.pretty(resource)}\n${type.description}\nAmount: ${amount}` : `${this.pretty(resource)}: ${amount}`;
+    this.showTooltip(txt, x, y);
+  }
+
+  private refreshSurvivors() {
+    const gs = this.scene.get('GameScene') as any;
+    const sm = gs?.getSurvivorManager?.();
+    if (!sm) return;
+    const list: Map<string, any> = sm.getSurvivors?.();
+    if (!list) return;
+
+    // Clear previous rows
+    this.survivorListContainer.removeAll(true);
+
+    let y = 0;
+    list.forEach((s: any) => {
+      const rowBg = this.add.rectangle(110, y + 14, 200, 28, 0x233242, 0.6).setDepth(110);
+      const name = this.add.text(6, y + 4, s.name, {
+        fontSize: '11px', color: '#ecf0f1', fontFamily: this.fontFamily
+      }).setDepth(111);
+      const moodCol = s.mood === 'Content' ? '#27ae60'
+        : s.mood === 'Stable' ? '#2ecc71'
+        : s.mood === 'Stressed' ? '#f39c12'
+        : s.mood === 'Unstable' ? '#e67e22' : '#e74c3c';
+      const mood = this.add.text(6, y + 16, s.mood, {
+        fontSize: '10px', color: moodCol, fontFamily: this.fontFamily
+      }).setDepth(111);
+      const taskText = s.task ? s.task.type : (s.currentTask || 'idle');
+      const task = this.add.text(120, y + 10, taskText, {
+        fontSize: '10px', color: '#9bd2ff', fontFamily: this.fontFamily
+      }).setDepth(111);
+
+      this.survivorListContainer.add([rowBg, name, mood, task]);
+      y += 32;
+    });
+  }
+
+  private refreshBuildBars() {
+    // Clear previous bars
+    this.buildBarsContainer.removeAll(true);
+    const gs = this.scene.get('GameScene') as any;
+    const cs = gs?.getCraftingSystem?.();
+    if (!cs) return;
+
+    const cam = (gs as Phaser.Scene).cameras.main;
+    const buildings: Map<string, any> = cs.getBuildings?.();
+    if (!buildings) return;
+
+    buildings.forEach((b: any) => {
+      if (b.status === 'blueprint' || b.status === 'under_construction') {
+        const progress = Phaser.Math.Clamp(b.constructionProgress || 0, 0, 1);
+        const sx = (b.x - cam.scrollX) * cam.zoom;
+        const sy = (b.y - cam.scrollY) * cam.zoom;
+        const barW = 44;
+        const barH = 6;
+        const bg = this.add.rectangle(sx, sy - 28, barW, barH, 0x233242, 0.95).setDepth(2000);
+        const fg = this.add.rectangle(sx - barW / 2 + (barW * progress) / 2, sy - 28, barW * progress, barH - 2, 0x27ae60, 1).setDepth(2001);
+        fg.setOrigin(0.5, 0.5);
+        this.buildBarsContainer.add([bg, fg]);
       }
     });
   }
