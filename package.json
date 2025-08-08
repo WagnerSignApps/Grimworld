@@ -1,0 +1,34 @@
+{
+  "name": "grimworld",
+  "version": "1.0.0",
+  "description": "A RimWorld-style colony sim set in the decaying suburbs of America",
+  "main": "index.js",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "serve": "http-server dist",
+    "deploy": "npx firebase deploy",
+    "deploy:hosting": "npx firebase deploy --only hosting:grimworld",
+    "emulate:hosting": "npx firebase emulators:start --only hosting"
+  },
+  "keywords": [
+    "game",
+    "simulation",
+    "colony",
+    "suburban",
+    "conspiracy"
+  ],
+  "author": "Grimworld Dev Team",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.0.0",
+    "vite": "^5.0.0"
+  },
+  "dependencies": {
+    "firebase": "^12.1.0",
+    "howler": "^2.2.4",
+    "phaser": "^3.70.0"
+  }
+}
