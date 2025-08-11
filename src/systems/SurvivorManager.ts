@@ -63,11 +63,15 @@ export interface Survivor {
   speed: number;
   skills: { [key: string]: number };
   quirks: string[];
+  // Status flags
+  isStarving?: boolean;
+  isBreaking?: boolean;
 }
 
 export class SurvivorManager {
   private scene: Phaser.Scene;
   private survivors: Map<string, Survivor> = new Map();
+  private wanderingSurvivors: Map<string, Survivor> = new Map();
   private survivorBackgrounds: SurvivorBackground[] = [];
 
   constructor(scene: Phaser.Scene) {
@@ -142,7 +146,7 @@ export class SurvivorManager {
     }
   }
 
-  private createSurvivor(name: string, background: SurvivorBackground, x: number, y: number): Survivor {
+  private createSurvivor(name: string, background: SurvivorBackground, x: number, y: number, addToColony = true): Survivor {
     // Generate a simple humanoid texture with randomized outfit/skin/hair
     const key = 'survivor_' + Phaser.Utils.String.UUID();
     const g = this.scene.add.graphics();
@@ -212,11 +216,20 @@ export class SurvivorManager {
       quirks: [...background.quirks]
     };
 
-    this.survivors.set(survivor.id, survivor);
+    if (addToColony) {
+        this.survivors.set(survivor.id, survivor);
+    }
 
     // Make sprite interactive
     sprite.setInteractive({ useHandCursor: true });
-    sprite.on('pointerdown', () => this.selectSurvivor(survivor.id));
+    sprite.setData('type', 'survivor');
+    sprite.setData('id', survivor.id);
+    sprite.on('pointerdown', () => {
+      this.selectSurvivor(survivor.id)
+      const ui = this.scene.scene.get('UIScene') as any;
+      ui.selectedSurvivorId = survivor.id;
+      ui.updateSurvivorPanel();
+    });
 
     return survivor;
   }
@@ -231,8 +244,10 @@ export class SurvivorManager {
     return 'Breaking';
   }
 
-  private selectSurvivor(id: string) {
+  public selectSurvivor(id: string) {
     const survivor = this.survivors.get(id);
+    const gameScene = this.scene as any;
+
     if (survivor) {
       // Highlight selected survivor
       survivor.sprite.setTint(0xffff00); // Yellow highlight
@@ -244,8 +259,12 @@ export class SurvivorManager {
         }
       });
 
-      // TODO: Show survivor details in UI
+      gameScene.setSelectedSurvivor?.(id);
       console.log(`Selected: ${survivor.name} (${survivor.background.name})`);
+    } else {
+      // Deselect all
+      this.survivors.forEach(s => s.sprite.clearTint());
+      gameScene.setSelectedSurvivor?.(undefined);
     }
   }
 
@@ -263,6 +282,22 @@ export class SurvivorManager {
     if (Math.random() < 0.01) { // 1% chance per frame
       survivor.hunger = Math.min(100, survivor.hunger + 1);
       
+      // Starvation check
+      if (survivor.hunger > 80 && !survivor.isStarving) {
+        survivor.isStarving = true;
+        this.scene.events.emit('survivorStateChanged', { survivor, state: 'starving' });
+      } else if (survivor.hunger <= 80 && survivor.isStarving) {
+        survivor.isStarving = false;
+      }
+
+      // Sanity check
+      if (survivor.sanity < 20 && !survivor.isBreaking) {
+          survivor.isBreaking = true;
+          this.scene.events.emit('survivorStateChanged', { survivor, state: 'breaking' });
+      } else if (survivor.sanity >= 20 && survivor.isBreaking) {
+          survivor.isBreaking = false;
+      }
+
       if (survivor.hunger > 80) {
         survivor.sanity = Math.max(0, survivor.sanity - 1);
       }
@@ -274,6 +309,25 @@ export class SurvivorManager {
 
   // New AI loop
   private updateAI(survivor: Survivor, dt: number) {
+    const gameScene = this.scene as any;
+    // --- Defense Mode Override ---
+    if (gameScene.defenseModeActive) {
+        const hostile = this.findNearestHostile(survivor);
+        if (hostile) {
+            // If not already defending this hostile, assign priority task
+            if (!survivor.task || survivor.task.type !== 'defend' || (survivor.task as DefendTask).enemyUnitId !== hostile.id) {
+                const task: DefendTask = {
+                    type: 'defend',
+                    enemyUnitId: hostile.id,
+                    state: 'to_enemy',
+                    targetX: hostile.x,
+                    targetY: hostile.y
+                };
+                this.assignPriorityTask(survivor.id, task);
+            }
+        }
+    }
+
     // pick a task if none
     if (!survivor.task) {
       this.ensureTask(survivor);
@@ -569,10 +623,25 @@ export class SurvivorManager {
   public damageSurvivor(id: string, amount: number) {
     const s = this.survivors.get(id);
     if (!s) return;
+
     s.health = Math.max(0, s.health - amount);
     s.mood = this.calculateMood(s.health, s.sanity, s.hunger);
+    this.scene.events.emit('survivorDamaged', { survivor: s, damage: amount });
+
     if (s.health <= 0) {
+      this.scene.events.emit('survivorDied', { survivor: s });
       this.removeSurvivor(id);
+    } else {
+        // flash red
+        s.sprite.setTintFill(0xff0000);
+        this.scene.time.delayedCall(100, () => {
+            // only clear tint if not selected
+            if (s.sprite.tintTopLeft === 0xffff00) { // check if it's the selection tint
+                // it is selected, do nothing
+            } else {
+                s.sprite.clearTint();
+            }
+        });
     }
   }
 
@@ -662,5 +731,70 @@ export class SurvivorManager {
 
   getSurvivorCount(): number {
     return this.survivors.size;
+  }
+
+  public generateWanderer() {
+    // Don't generate too many
+    if (this.wanderingSurvivors.size >= 5) return;
+
+    const background = Phaser.Utils.Array.GetRandom(this.survivorBackgrounds);
+    const name = `Wanderer ${Phaser.Math.Between(100, 999)}`;
+
+    // Create the survivor off-screen and invisible
+    const wanderer = this.createSurvivor(name, background, -100, -100, false);
+    wanderer.sprite.setVisible(false);
+
+    this.wanderingSurvivors.set(wanderer.id, wanderer);
+    console.log(`Generated wanderer: ${name}`);
+  }
+
+  public getWanderingSurvivors(): Map<string, Survivor> {
+    return this.wanderingSurvivors;
+  }
+
+  public recruitWanderer(id: string): boolean {
+    const wanderer = this.wanderingSurvivors.get(id);
+    if (!wanderer) return false;
+
+    // Remove from wanderers and add to main survivors
+    this.wanderingSurvivors.delete(id);
+    this.survivors.set(id, wanderer);
+
+    // Make visible and move to stockpile
+    const rm = (this.scene as any).getResourceManager();
+    const stockpile = rm.getStockpile();
+    wanderer.x = stockpile.x + Phaser.Math.Between(-10, 10);
+    wanderer.y = stockpile.y + Phaser.Math.Between(-10, 10);
+    wanderer.sprite.setPosition(wanderer.x, wanderer.y);
+    wanderer.sprite.setVisible(true);
+    wanderer.nameLabel.setVisible(true);
+
+    this.scene.events.emit('survivorRecruited', wanderer);
+    return true;
+  }
+
+  public assignPriorityTask(survivorId: string, task: AITask) {
+    const survivor = this.survivors.get(survivorId);
+    if (!survivor) return;
+
+    // Clear existing task and any reservations
+    if (survivor.task?.type === 'gather') {
+      const rm = (this.scene as any).getResourceManager?.();
+      rm?.releaseResourceNode?.(survivor.task.nodeId, survivor.id);
+    }
+    this.clearTaskAnim(survivor);
+
+    survivor.task = task;
+
+    // Visual feedback for the order
+    const orderMarker = this.scene.add.ring(survivor.x, survivor.y, 10, 12, 0xffff00, 1);
+    orderMarker.setDepth(0);
+    this.scene.tweens.add({
+        targets: orderMarker,
+        radius: 20,
+        alpha: 0,
+        duration: 400,
+        onComplete: () => orderMarker.destroy()
+    });
   }
 }

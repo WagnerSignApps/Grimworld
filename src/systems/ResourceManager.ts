@@ -207,6 +207,8 @@ export class ResourceManager {
 
     // Make interactive
     sprite.setInteractive({ useHandCursor: true });
+    sprite.setData('type', 'resourceNode');
+    sprite.setData('id', node.id);
     sprite.on('pointerdown', () => this.harvestResourceNode(node.id));
 
     this.resourceNodes.set(node.id, node);

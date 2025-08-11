@@ -1,5 +1,6 @@
 import Phaser from 'phaser';
 import { ResourceManager } from './ResourceManager';
+import { ResearchSystem } from './ResearchSystem';
 
 export interface Recipe {
   id: string;
@@ -10,7 +11,7 @@ export interface Recipe {
   buildTime: number; // in seconds
   skillRequired?: string;
   minSkillLevel?: number;
-  unlockConditions?: string[];
+  unlocked: boolean; // Starts as false for tech-gated recipes
   produces?: { [resourceType: string]: number }; // For production buildings
   effects?: BuildingEffect[];
 }
@@ -44,15 +45,18 @@ export interface Building {
 export class CraftingSystem {
   private scene: Phaser.Scene;
   private resourceManager: ResourceManager;
+  private researchSystem: ResearchSystem;
   private recipes: Map<string, Recipe> = new Map();
   private buildings: Map<string, Building> = new Map();
   private selectedRecipe?: Recipe;
   private buildMode: boolean = false;
 
-  constructor(scene: Phaser.Scene, resourceManager: ResourceManager) {
+  constructor(scene: Phaser.Scene, resourceManager: ResourceManager, researchSystem: ResearchSystem) {
     this.scene = scene;
     this.resourceManager = resourceManager;
+    this.researchSystem = researchSystem;
     this.initializeRecipes();
+    this.listenForResearchUnlocks();
   }
 
   private initializeRecipes() {
@@ -67,6 +71,7 @@ export class CraftingSystem {
         buildTime: 30,
         skillRequired: 'repair',
         minSkillLevel: 2,
+        unlocked: false,
         effects: [
           { type: 'defense_bonus', value: 2, radius: 1, description: 'Provides light cover' }
         ]
@@ -80,6 +85,7 @@ export class CraftingSystem {
         buildTime: 120,
         skillRequired: 'repair',
         minSkillLevel: 5,
+        unlocked: false,
         effects: [
           { type: 'defense_bonus', value: 8, radius: 2, description: 'Strong defensive barrier' }
         ]
@@ -93,6 +99,7 @@ export class CraftingSystem {
         buildTime: 45,
         skillRequired: 'tinkering',
         minSkillLevel: 4,
+        unlocked: false,
         effects: [
           { type: 'defense_bonus', value: 3, radius: 5, description: 'Early warning system' }
         ]
@@ -108,6 +115,7 @@ export class CraftingSystem {
         buildTime: 90,
         skillRequired: 'tinkering',
         minSkillLevel: 6,
+        unlocked: false,
         effects: [
           { type: 'resource_generation', value: 1, description: 'Generates power' }
         ]
@@ -121,6 +129,7 @@ export class CraftingSystem {
         buildTime: 75,
         skillRequired: 'tinkering',
         minSkillLevel: 7,
+        unlocked: true, // Example of a default unlocked recipe
         effects: [
           { type: 'conspiracy_reduction', value: 5, radius: 10, description: 'Blocks surveillance' }
         ]
@@ -134,6 +143,7 @@ export class CraftingSystem {
         buildTime: 60,
         skillRequired: 'repair',
         minSkillLevel: 4,
+        unlocked: true,
         effects: [
           { type: 'mood_boost', value: 3, radius: 8, description: 'Clean water improves health' }
         ]
@@ -149,6 +159,7 @@ export class CraftingSystem {
         buildTime: 150,
         skillRequired: 'cooking',
         minSkillLevel: 6,
+        unlocked: false,
         produces: { nuggets: 10 },
         effects: [
           { type: 'resource_generation', value: 10, description: 'Produces nuggets over time' }
@@ -163,6 +174,7 @@ export class CraftingSystem {
         buildTime: 100,
         skillRequired: 'tinkering',
         minSkillLevel: 5,
+        unlocked: true,
         produces: { plastic: 5, electronics: 2 },
         effects: [
           { type: 'resource_generation', value: 7, description: 'Processes scrap into materials' }
@@ -179,6 +191,7 @@ export class CraftingSystem {
         buildTime: 45,
         skillRequired: 'repair',
         minSkillLevel: 2,
+        unlocked: true,
         effects: [
           { type: 'mood_boost', value: 5, radius: 3, description: 'Better sleep quality' }
         ]
@@ -192,6 +205,7 @@ export class CraftingSystem {
         buildTime: 200,
         skillRequired: 'repair',
         minSkillLevel: 8,
+        unlocked: true,
         effects: [
           { type: 'mood_boost', value: 8, radius: 5, description: 'Sense of security' },
           { type: 'defense_bonus', value: 15, radius: 1, description: 'Ultimate protection' }
@@ -208,6 +222,7 @@ export class CraftingSystem {
         buildTime: 30,
         skillRequired: 'bureaucracy',
         minSkillLevel: 3,
+        unlocked: true,
         effects: [
           { type: 'skill_training', value: 2, description: 'Improves bureaucracy skill' },
           { type: 'conspiracy_reduction', value: 2, radius: 5, description: 'Understanding reduces fear' }
@@ -220,21 +235,28 @@ export class CraftingSystem {
     });
   }
 
-  getAvailableRecipes(survivorSkills?: { [skill: string]: number }): Recipe[] {
-    return Array.from(this.recipes.values()).filter(recipe => {
-      // Check skill requirements
-      if (recipe.skillRequired && recipe.minSkillLevel && survivorSkills) {
-        const skillLevel = survivorSkills[recipe.skillRequired] || 0;
-        if (skillLevel < recipe.minSkillLevel) return false;
-      }
-
-      // Check unlock conditions (placeholder for now)
-      if (recipe.unlockConditions) {
-        // Would check game state conditions here
-      }
-
-      return true;
+  private listenForResearchUnlocks() {
+    this.researchSystem.events.on('researchCompleted', (project: any) => {
+      project.unlocks.forEach((unlock: { type: string, id: string }) => {
+        if (unlock.type === 'recipe') {
+          this.unlockRecipe(unlock.id);
+        }
+      });
     });
+  }
+
+  public unlockRecipe(recipeId: string) {
+    const recipe = this.recipes.get(recipeId);
+    if (recipe) {
+      recipe.unlocked = true;
+      console.log(`Recipe unlocked: ${recipe.name}`);
+      // Announce this to the UI
+      this.scene.events.emit('recipeUnlocked', recipe);
+    }
+  }
+
+  getAvailableRecipes(): Recipe[] {
+    return Array.from(this.recipes.values()).filter(recipe => recipe.unlocked);
   }
 
   canCraftRecipe(recipeId: string): boolean {
@@ -258,6 +280,9 @@ export class CraftingSystem {
     // Do NOT consume resources up-front anymore. Survivors will haul them.
     const building = this.createBuilding(recipe, x, y, workerId);
     this.buildings.set(building.id, building);
+
+    // Announce the placement for the UI
+    this.scene.events.emit('buildingPlaced', building, recipe);
 
     // Auto-assign nearest idle survivor if none provided
     if (!workerId) {
@@ -313,6 +338,8 @@ export class CraftingSystem {
 
     // Make interactive
     sprite.setInteractive({ useHandCursor: true });
+    sprite.setData('type', 'building');
+    sprite.setData('id', building.id);
     sprite.on('pointerdown', () => this.selectBuilding(building.id));
 
     return building;
@@ -361,6 +388,8 @@ export class CraftingSystem {
             building.constructionProgress = 1;
             // Apply building effects
             this.applyBuildingEffects(building, recipe);
+            // Announce completion
+            this.scene.events.emit('buildingCompleted', building, recipe);
           }
         }
         break;

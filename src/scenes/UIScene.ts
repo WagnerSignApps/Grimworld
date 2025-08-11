@@ -18,8 +18,10 @@ export class UIScene extends Phaser.Scene {
   // Survivors UI
   private survivorPanel!: Phaser.GameObjects.Container;
   private survivorListContainer!: Phaser.GameObjects.Container;
+  private survivorDetailContainer!: Phaser.GameObjects.Container;
   private survivorMask!: Phaser.Display.Masks.GeometryMask;
   private survivorMaskGfx!: Phaser.GameObjects.Graphics;
+  private selectedSurvivorId?: string;
 
   // Event log
   private eventLogContainer!: Phaser.GameObjects.Container;
@@ -31,6 +33,14 @@ export class UIScene extends Phaser.Scene {
   // Tooltips
   private tooltipBg!: Phaser.GameObjects.Rectangle;
   private tooltipText!: Phaser.GameObjects.Text;
+
+// Time display
+private timeText!: Phaser.GameObjects.Text;
+  private researchProgressText!: Phaser.GameObjects.Text;
+
+  // Action Buttons
+  private defendButton!: Phaser.GameObjects.Rectangle;
+  private defendButtonLabel!: Phaser.GameObjects.Text;
 
   // Build progress overlays (drawn in UI scene projected from world)
   private buildBarsContainer!: Phaser.GameObjects.Container;
@@ -63,8 +73,9 @@ export class UIScene extends Phaser.Scene {
     this.buildBarsContainer = this.add.container(0, 0).setDepth(1000);
 
     // Timers to refresh dynamic UI
-    this.time.addEvent({ delay: 500, loop: true, callback: () => this.refreshSurvivors() });
+    this.time.addEvent({ delay: 500, loop: true, callback: () => this.updateSurvivorPanel() });
     this.time.addEvent({ delay: 400, loop: true, callback: () => this.refreshBuildBars() });
+    this.time.addEvent({ delay: 250, loop: true, callback: () => this.refreshResearchProgress() });
 
     // Resize handling for responsive layout
     this.scale.on('resize', (gameSize: any) => {
@@ -74,6 +85,391 @@ export class UIScene extends Phaser.Scene {
     // Initial log
     this.addEventLogEntry('Colony established in suburban wasteland...');
     this.addEventLogEntry('The HOA is watching...');
+
+    // Connect to GameClock
+    const gameScene = this.scene.get('GameScene') as any;
+    if (gameScene && gameScene.getGameClock) {
+      const clock = gameScene.getGameClock();
+      // Update time display when hour changes
+      clock.events.on('hourChanged', (time: { day: number; hour: number }) => {
+        this.timeText.setText(`Day ${time.day} - ${String(time.hour).padStart(2, '0')}:00`);
+      });
+      // Set initial time
+      this.timeText.setText(clock.getTimeString());
+    }
+
+    // Listen for game events
+    gameScene.events.on('buildingPlaced', (building: any, recipe: any) => {
+      this.addEventLogEntry(`Placed blueprint for ${recipe.name}.`);
+    });
+    gameScene.events.on('buildingCompleted', (building: any, recipe: any) => {
+      this.addEventLogEntry(`${recipe.name} has been built.`);
+    });
+    gameScene.events.on('recipeUnlocked', (recipe: any) => {
+        this.addEventLogEntry(`New technology unlocked: You can now build ${recipe.name}!`);
+    });
+    gameScene.events.on('survivorRecruited', (survivor: any) => {
+        this.addEventLogEntry(`${survivor.name} has joined the colony.`);
+    });
+
+    const tradeManager = gameScene.getTradeManager();
+    if (tradeManager) {
+        tradeManager.events.on('traderArrived', (trader: any) => {
+            this.addEventLogEntry(`A ${trader.type}, ${trader.name}, has arrived to trade.`);
+        });
+        tradeManager.events.on('traderLeft', (trader: any) => {
+            this.addEventLogEntry(`${trader.name} has left.`);
+        });
+        tradeManager.events.on('tradeCompleted', (trade: any) => {
+            this.addEventLogEntry('Trade successful.');
+        });
+        tradeManager.events.on('tradeScam', (scam: any) => {
+            this.addEventLogEntry(`SCAM! ${scam.trader.name} shorted you ${scam.amount} ${scam.resource}!`);
+        });
+        tradeManager.events.on('tradeBonus', (bonus: any) => {
+            this.addEventLogEntry(`BONUS! ${bonus.trader.name} threw in an extra ${bonus.amount} ${bonus.resource}!`);
+        });
+    }
+
+    // Listen for combat events
+    gameScene.events.on('survivorDamaged', (data: any) => {
+        // This could get spammy, so maybe only log sometimes
+        if (Math.random() < 0.3) {
+            this.addEventLogEntry(`${data.survivor.name} took ${data.damage} damage!`);
+        }
+    });
+    gameScene.events.on('unitDamaged', (data: any) => {
+        if (Math.random() < 0.3) {
+            this.addEventLogEntry(`${data.unit.name} took ${data.damage} damage!`);
+        }
+    });
+    gameScene.events.on('survivorDied', (data: any) => {
+        this.addEventLogEntry(`TRAGEDY! ${data.survivor.name} has fallen in battle.`);
+    });
+    gameScene.events.on('unitDied', (data: any) => {
+        this.addEventLogEntry(`${data.unit.name} has been defeated.`);
+    });
+    gameScene.events.on('survivorStateChanged', (data: any) => {
+        if (data.state === 'starving') {
+            this.addEventLogEntry(`${data.survivor.name} is starving!`);
+        } else if (data.state === 'breaking') {
+            this.addEventLogEntry(`${data.survivor.name} is having a mental break!`);
+        }
+    });
+  }
+
+  private showResearchMenu() {
+    const { width, height } = this.cameras.main;
+    const gameScene = this.scene.get('GameScene') as any;
+    const researchSystem = gameScene.getResearchSystem();
+    if (!researchSystem) return;
+
+    // Create research menu overlay
+    const overlay = this.add.rectangle(width / 2, height / 2, width * 0.9, height * 0.8, 0x2c3e50, 0.98)
+      .setStrokeStyle(2, 0x34495e)
+      .setName('researchMenuOverlay');
+
+    this.add.text(width / 2, height * 0.15, 'RESEARCH & DEVELOPMENT', {
+      fontSize: '24px',
+      color: '#ecf0f1',
+      fontFamily: this.fontFamily
+    }).setOrigin(0.5).setName('researchMenuTitle');
+
+    // Close button
+    const closeBtn = this.add.text(width * 0.95 - 20, height * 0.1 + 20, 'X', { fontSize: '20px', color: '#e74c3c' })
+        .setOrigin(0.5)
+        .setInteractive({ useHandCursor: true })
+        .on('pointerdown', () => this.closeResearchMenu())
+        .setName('researchMenuClose');
+
+    const projects = Array.from(researchSystem.getProjects().values());
+    const projectObjects: Map<string, Phaser.GameObjects.Container> = new Map();
+
+    // Simple grid layout
+    const columns = 3;
+    const colWidth = (width * 0.9) / columns;
+    const rowHeight = 120;
+    let col = 0;
+    let row = 0;
+
+    projects.forEach(p => {
+        const x = width * 0.1 + col * colWidth + colWidth / 2;
+        const y = height * 0.25 + row * rowHeight;
+
+        const container = this.add.container(x, y).setName('researchNode');
+        const status = researchSystem.getProjectStatus(p.id);
+        const canStart = researchSystem.canStartResearch(p.id);
+
+        let bgColor = 0x1a2833;
+        let strokeColor = 0x34495e;
+        if (status === 'completed') { bgColor = 0x27ae60; }
+        else if (status === 'in_progress') { bgColor = 0x3498db; }
+        else if (status === 'available') { strokeColor = 0xf1c40f; }
+
+        const bg = this.add.rectangle(0, 0, colWidth * 0.8, rowHeight - 10, bgColor, 0.9).setStrokeStyle(2, strokeColor);
+        container.add(bg);
+
+        container.add(this.add.text(0, -40, p.name, { fontSize: '12px', color: '#ecf0f1', fontFamily: this.fontFamily, align: 'center', wordWrap: {width: colWidth * 0.7} }).setOrigin(0.5));
+
+        const costText = Object.entries(p.cost).map(([res, amt]) => `${amt} ${res}`).join(', ');
+        container.add(this.add.text(0, 20, `Cost: ${costText}`, { fontSize: '10px', color: '#bdc3c7', fontFamily: this.fontFamily }).setOrigin(0.5));
+
+        if (status === 'available') {
+            const startButton = this.add.text(0, 40, 'BEGIN RESEARCH', { fontSize: '11px', color: canStart ? '#2ecc71' : '#7f8c8d', fontFamily: this.fontFamily }).setOrigin(0.5);
+            container.add(startButton);
+            if (canStart) {
+                bg.setInteractive({ useHandCursor: true }).on('pointerdown', () => {
+                    researchSystem.startResearch(p.id);
+                    this.closeResearchMenu();
+                    this.showResearchMenu(); // Refresh
+                });
+            }
+        } else if (status === 'completed') {
+            container.add(this.add.text(0, 40, 'COMPLETED', { fontSize: '11px', color: '#ecf0f1', fontFamily: this.fontFamily }).setOrigin(0.5));
+        }
+
+        projectObjects.set(p.id, container);
+        col++;
+        if (col >= columns) {
+            col = 0;
+            row++;
+        }
+    });
+  }
+
+  private closeResearchMenu() {
+    const elementsToRemove = ['researchMenuOverlay', 'researchMenuTitle', 'researchMenuClose', 'researchNode'];
+    elementsToRemove.forEach(name => {
+      const children = this.children.getAll();
+      children.filter(c => c.name === name).forEach(c => c.destroy());
+    });
+  }
+
+  public showGameTooltip(x: number, y: number, text: string) {
+      this.showTooltip(text, x, y);
+  }
+
+  public hideGameTooltip() {
+      this.hideTooltip();
+  }
+
+  private updateDefendButton(isDefenseMode: boolean) {
+      if (!this.defendButton) return;
+
+      if (isDefenseMode) {
+          this.defendButton.setFillStyle(0xe74c3c, 0.95);
+          this.defendButtonLabel.setColor('#ffffff');
+          this.defendButtonLabel.setText('DEFENDING');
+      } else {
+          this.defendButton.setFillStyle(0x233242, 0.95);
+          this.defendButtonLabel.setColor('#e74c3c');
+          this.defendButtonLabel.setText('DEFEND');
+      }
+  }
+
+  private showTradeMenu() {
+    const { width, height } = this.cameras.main;
+    const gameScene = this.scene.get('GameScene') as any;
+    const tradeManager = gameScene.getTradeManager();
+    const resourceManager = gameScene.getResourceManager();
+    if (!tradeManager) return;
+
+    const trader = tradeManager.currentTrader;
+
+    const overlay = this.add.rectangle(width / 2, height / 2, 700, 500, 0x2c3e50, 0.98)
+      .setStrokeStyle(2, 0x34495e)
+      .setName('tradeMenuOverlay');
+
+    const title = this.add.text(width / 2, height / 2 - 220, 'TRADE', { fontSize: '20px', color: '#ecf0f1', fontFamily: this.fontFamily }).setOrigin(0.5).setName('tradeMenuTitle');
+    const closeBtn = this.add.text(width / 2 + 330, height / 2 - 230, 'X', { fontSize: '20px', color: '#e74c3c' }).setOrigin(0.5).setInteractive({ useHandCursor: true }).on('pointerdown', () => this.closeTradeMenu()).setName('tradeMenuClose');
+
+    if (!trader) {
+        this.add.text(width / 2, height / 2, 'No trader is currently visiting.', { fontSize: '14px', color: '#bdc3c7', fontFamily: this.fontFamily, align: 'center' }).setOrigin(0.5).setName('tradeMenuNode');
+        return;
+    }
+
+    title.setText(`Trading with ${trader.name} (${trader.type})`);
+
+    const playerOffer = new Map<string, number>();
+    const traderOffer = new Map<string, number>();
+
+    const allResources = Array.from(resourceManager.getAllResourceTypes().keys());
+
+    const redrawSummary = () => {
+        // This function will be complex, for now, we'll just log the offer
+        console.log('Player gives:', playerOffer, 'Trader gives:', traderOffer);
+    };
+
+    let y = height / 2 - 150;
+    allResources.forEach(res => {
+        const container = this.add.container(width/2, y).setName('tradeMenuNode');
+
+        // Resource Name
+        container.add(this.add.text(0, 0, this.pretty(res), {fontSize: '12px'}).setOrigin(0.5));
+
+        // Player side
+        const playerAmount = resourceManager.getResource(res);
+        container.add(this.add.text(-150, 0, `You have: ${playerAmount}`, {fontSize: '10px'}).setOrigin(0.5));
+        const playerOfferText = this.add.text(-250, 0, '0', {fontSize: '12px'}).setOrigin(0.5);
+        container.add(playerOfferText);
+
+        const pMinus = this.add.text(-280, 0, '-', {fontSize: '16px'}).setOrigin(0.5).setInteractive({useHandCursor: true}).on('pointerdown', () => {
+            const current = playerOffer.get(res) || 0;
+            if (current > 0) playerOffer.set(res, current - 1);
+            playerOfferText.setText(String(playerOffer.get(res) || 0));
+            redrawSummary();
+        });
+        const pPlus = this.add.text(-220, 0, '+', {fontSize: '16px'}).setOrigin(0.5).setInteractive({useHandCursor: true}).on('pointerdown', () => {
+            const current = playerOffer.get(res) || 0;
+            if (current < playerAmount) playerOffer.set(res, current + 1);
+            playerOfferText.setText(String(playerOffer.get(res) || 0));
+            redrawSummary();
+        });
+        container.add([pMinus, pPlus]);
+
+        // Trader side
+        const traderAmount = trader.inventory.get(res) || 0;
+        container.add(this.add.text(150, 0, `They have: ${traderAmount}`, {fontSize: '10px'}).setOrigin(0.5));
+        const traderOfferText = this.add.text(250, 0, '0', {fontSize: '12px'}).setOrigin(0.5);
+        container.add(traderOfferText);
+
+        const tMinus = this.add.text(220, 0, '-', {fontSize: '16px'}).setOrigin(0.5).setInteractive({useHandCursor: true}).on('pointerdown', () => {
+            const current = traderOffer.get(res) || 0;
+            if (current > 0) traderOffer.set(res, current - 1);
+            traderOfferText.setText(String(traderOffer.get(res) || 0));
+            redrawSummary();
+        });
+        const tPlus = this.add.text(280, 0, '+', {fontSize: '16px'}).setOrigin(0.5).setInteractive({useHandCursor: true}).on('pointerdown', () => {
+            const current = traderOffer.get(res) || 0;
+            if (current < traderAmount) traderOffer.set(res, current + 1);
+            traderOfferText.setText(String(traderOffer.get(res) || 0));
+            redrawSummary();
+        });
+        container.add([tMinus, tPlus]);
+
+        y += 30;
+    });
+
+    const confirmButton = this.add.rectangle(width/2, height/2 + 220, 150, 40, 0x27ae60).setName('tradeMenuNode').setInteractive({useHandCursor:true});
+    this.add.text(width/2, height/2 + 220, 'CONFIRM TRADE', {fontSize: '14px'}).setOrigin(0.5).setName('tradeMenuNode');
+
+    confirmButton.on('pointerdown', () => {
+        // Simplified value calculation
+        let playerValue = 0;
+        playerOffer.forEach((amount, res) => playerValue += amount * tradeManager.getTraderValue(res));
+        let traderValue = 0;
+        traderOffer.forEach((amount, res) => traderValue += amount * tradeManager.getTraderValue(res));
+
+        if (playerValue >= traderValue * 0.8) { // Allow some leeway
+            const success = tradeManager.executeTrade(playerOffer, traderOffer);
+            if (success) {
+                this.closeTradeMenu();
+            } else {
+                this.addEventLogEntry('Trade failed. Check resource amounts.');
+            }
+        } else {
+            this.addEventLogEntry('Trader considers this a bad deal.');
+        }
+    });
+  }
+
+  private closeTradeMenu() {
+    const elementsToRemove = ['tradeMenuOverlay', 'tradeMenuTitle', 'tradeMenuClose', 'tradeMenuNode'];
+    elementsToRemove.forEach(name => {
+      const children = this.children.getAll();
+      children.filter(c => c.name === name).forEach(c => c.destroy());
+    });
+  }
+
+  private showRecruitMenu() {
+    const { width, height } = this.cameras.main;
+    const gameScene = this.scene.get('GameScene') as any;
+    const survivorManager = gameScene.getSurvivorManager();
+    const resourceManager = gameScene.getResourceManager();
+    if (!survivorManager || !resourceManager) return;
+
+    const overlay = this.add.rectangle(width / 2, height / 2, 500, 400, 0x2c3e50, 0.98)
+      .setStrokeStyle(2, 0x34495e)
+      .setName('recruitMenuOverlay');
+
+    this.add.text(width / 2, height / 2 - 170, 'RECRUIT WANDERERS', {
+      fontSize: '20px',
+      color: '#ecf0f1',
+      fontFamily: this.fontFamily
+    }).setOrigin(0.5).setName('recruitMenuTitle');
+
+    const closeBtn = this.add.text(width / 2 + 230, height / 2 - 180, 'X', { fontSize: '20px', color: '#e74c3c' })
+        .setOrigin(0.5)
+        .setInteractive({ useHandCursor: true })
+        .on('pointerdown', () => this.closeRecruitMenu())
+        .setName('recruitMenuClose');
+
+    const wanderers = Array.from(survivorManager.getWanderingSurvivors().values());
+
+    if (wanderers.length === 0) {
+        this.add.text(width / 2, height / 2, 'No wanderers available.\nCheck back later.', {
+            fontSize: '14px', color: '#bdc3c7', fontFamily: this.fontFamily, align: 'center'
+        }).setOrigin(0.5).setName('recruitMenuNode');
+        return;
+    }
+
+    let y = height / 2 - 120;
+    wanderers.forEach(w => {
+        const container = this.add.container(width / 2, y).setName('recruitMenuNode');
+        const bg = this.add.rectangle(0, 0, 480, 60, 0x1a2833, 0.9).setStrokeStyle(1, 0x34495e);
+        container.add(bg);
+
+        container.add(this.add.text(-230, -10, `${w.name} (${w.background.name})`, { fontSize: '12px', color: '#ecf0f1', fontFamily: this.fontFamily }));
+
+        const RECRUIT_COST = { nuggets: 20, sauce: 10 };
+        const costText = Object.entries(RECRUIT_COST).map(([res, amt]) => `${amt} ${res}`).join(', ');
+        container.add(this.add.text(-230, 10, `Cost: ${costText}`, { fontSize: '10px', color: '#bdc3c7', fontFamily: this.fontFamily }));
+
+        const canAfford = Object.entries(RECRUIT_COST).every(([res, amt]) => resourceManager.hasResource(res, amt));
+
+        const recruitButton = this.add.rectangle(180, 0, 100, 30, canAfford ? 0x27ae60 : 0x7f8c8d, 0.8)
+            .setStrokeStyle(1, canAfford ? '#2ecc71' : '#95a5a6')
+            .setInteractive({ useHandCursor: true });
+
+        container.add(recruitButton);
+        container.add(this.add.text(180, 0, 'RECRUIT', {fontSize: '11px', color: '#fff'}).setOrigin(0.5));
+
+        recruitButton.on('pointerdown', () => {
+            if (canAfford) {
+                Object.entries(RECRUIT_COST).forEach(([res, amt]) => resourceManager.removeResource(res, amt));
+                survivorManager.recruitWanderer(w.id);
+                this.closeRecruitMenu();
+            } else {
+                this.addEventLogEntry('Not enough resources to recruit.');
+            }
+        });
+
+        y += 70;
+    });
+  }
+
+  private closeRecruitMenu() {
+    const elementsToRemove = ['recruitMenuOverlay', 'recruitMenuTitle', 'recruitMenuClose', 'recruitMenuNode'];
+    elementsToRemove.forEach(name => {
+      const children = this.children.getAll();
+      children.filter(c => c.name === name).forEach(c => c.destroy());
+    });
+  }
+
+  private refreshResearchProgress() {
+      const gameScene = this.scene.get('GameScene') as any;
+      const researchSystem = gameScene.getResearchSystem?.();
+      if (!researchSystem) {
+          this.researchProgressText.setText('');
+          return;
+      }
+
+      const { project, progress } = researchSystem.getActiveResearch();
+      if (project) {
+          this.researchProgressText.setText(`Researching: ${project.name} (${(progress * 100).toFixed(0)}%)`);
+      } else {
+          this.researchProgressText.setText('No active research project.');
+      }
   }
 
   private createTopPanel(width: number, height: number) {
@@ -104,8 +500,8 @@ export class UIScene extends Phaser.Scene {
       x += spacing;
     });
 
-    // Date/time placeholder (static for now)
-    this.add.text(width - 16, 12, 'Day 1 - 08:00', {
+    // Date/time placeholder
+    this.timeText = this.add.text(width - 16, 12, 'Day 1 - 08:00', {
       fontSize: '12px',
       color: '#bdc3c7',
       fontFamily: this.fontFamily
@@ -127,9 +523,9 @@ export class UIScene extends Phaser.Scene {
       { text: 'DEFEND', x: 480, color: '#e74c3c', action: 'defend' }
     ];
 
-    buttons.forEach(button => {
-      const colorInt = parseInt(button.color.replace('#', '0x'));
-      const btn = this.add.rectangle(button.x, height - 40, 90, 32, 0x233242, 0.95)
+    buttons.forEach(buttonData => {
+      const colorInt = parseInt(buttonData.color.replace('#', '0x'));
+      const btn = this.add.rectangle(buttonData.x, height - 40, 90, 32, 0x233242, 0.95)
         .setStrokeStyle(1, colorInt)
         .setInteractive({ useHandCursor: true })
         .setDepth(110)
@@ -137,20 +533,26 @@ export class UIScene extends Phaser.Scene {
         .on('pointerout', () => btn.setFillStyle(0x233242, 0.95))
         .on('pointerdown', () => {
           btn.setFillStyle(0x1a2833, 0.95);
-          this.handleActionButton(button.action);
+          this.handleActionButton(buttonData.action);
         });
 
-      const label = this.add.text(button.x, height - 40, button.text, {
+      const label = this.add.text(buttonData.x, height - 40, buttonData.text, {
         fontSize: '11px',
-        color: button.color,
+        color: buttonData.color,
         fontFamily: this.fontFamily
       }).setOrigin(0.5).setDepth(111);
 
+      // Store defend button reference
+      if (buttonData.action === 'defend') {
+          this.defendButton = btn;
+          this.defendButtonLabel = label;
+      }
+
       // Tooltip
-      btn.on('pointerover', (p: Phaser.Input.Pointer) => this.showTooltip(`${button.text} actions`, p.x, p.y));
+      btn.on('pointerover', (p: Phaser.Input.Pointer) => this.showTooltip(`${buttonData.text} actions`, p.x, p.y));
       btn.on('pointerout', () => this.hideTooltip());
       label.setInteractive({ useHandCursor: true })
-        .on('pointerover', (p: Phaser.Input.Pointer) => this.showTooltip(`${button.text} actions`, p.x, p.y))
+        .on('pointerover', (p: Phaser.Input.Pointer) => this.showTooltip(`${buttonData.text} actions`, p.x, p.y))
         .on('pointerout', () => this.hideTooltip());
     });
 
@@ -161,22 +563,58 @@ export class UIScene extends Phaser.Scene {
       fontFamily: 'Courier New, monospace'
     });
 
-    ['1x', '2x', '3x', 'PAUSE'].forEach((speed, index) => {
+    const speedButtons: Phaser.GameObjects.Rectangle[] = [];
+    const speedOptions = [
+      { text: 'PAUSE', scale: 0 },
+      { text: '1x', scale: 1 },
+      { text: '2x', scale: 2 },
+      { text: '3x', scale: 3 }
+    ];
+
+    const setActiveButton = (activeIndex: number) => {
+      speedButtons.forEach((btn, i) => {
+        if (i === activeIndex) {
+          btn.setFillStyle(0x3498db, 0.95).setStrokeStyle(1, 0xecf0f1);
+        } else {
+          btn.setFillStyle(0x233242, 0.95).setStrokeStyle(1, 0x95a5a6);
+        }
+      });
+    };
+
+    speedOptions.forEach((speed, index) => {
       const x = width - 150 + (index * 34);
       const speedBtn = this.add.rectangle(x, height - 40, 28, 22, 0x233242, 0.95)
         .setStrokeStyle(1, 0x95a5a6)
         .setInteractive({ useHandCursor: true })
         .setDepth(110);
 
-      this.add.text(x, height - 40, speed, {
+      this.add.text(x, height - 40, speed.text, {
         fontSize: '9px',
         color: '#95a5a6',
         fontFamily: this.fontFamily
       }).setOrigin(0.5).setDepth(111);
 
-      speedBtn.on('pointerover', () => speedBtn.setFillStyle(0x2d3f50, 0.95));
-      speedBtn.on('pointerout', () => speedBtn.setFillStyle(0x233242, 0.95));
+      speedBtn.on('pointerdown', () => {
+        const gameScene = this.scene.get('GameScene') as any;
+        if (gameScene && gameScene.getGameClock) {
+          const clock = gameScene.getGameClock();
+          clock.setTimeScale(speed.scale);
+          setActiveButton(index);
+        }
+      });
+      speedButtons.push(speedBtn);
     });
+
+    // Set initial active button
+    setActiveButton(1); // Default to 1x speed
+
+    // Research progress text
+    this.researchProgressText = this.add.text(width - 220, height - 20, '', {
+        fontSize: '10px',
+        color: '#3498db',
+        fontFamily: this.fontFamily,
+        align: 'right'
+    }).setOrigin(1, 0.5);
   }
 
   private createSidePanel(width: number, height: number) {
@@ -194,7 +632,9 @@ export class UIScene extends Phaser.Scene {
     // Scrollable list
     this.survivorPanel = this.add.container(width - 220, 100).setDepth(110);
     this.survivorListContainer = this.add.container(0, 0);
-    this.survivorPanel.add(this.survivorListContainer);
+    this.survivorDetailContainer = this.add.container(0, 250).setVisible(false); // Positioned below list
+    this.survivorPanel.add([this.survivorListContainer, this.survivorDetailContainer]);
+
 
     // Mask for scrollable survivor list (use Graphics for GeometryMask)
     const sGfx = this.add.graphics();
@@ -326,16 +766,20 @@ export class UIScene extends Phaser.Scene {
         this.showBuildMenu();
         break;
       case 'research':
-        this.addEventLogEntry('Research system coming soon...');
+        this.showResearchMenu();
         break;
       case 'recruit':
-        this.addEventLogEntry('Recruitment system coming soon...');
+        this.showRecruitMenu();
         break;
       case 'trade':
-        this.addEventLogEntry('Trading system coming soon...');
+        this.showTradeMenu();
         break;
       case 'defend':
-        this.addEventLogEntry('Defense system coming soon...');
+        gameScene.defenseModeActive = !gameScene.defenseModeActive;
+        this.addEventLogEntry(`Defense mode ${gameScene.defenseModeActive ? 'ACTIVATED' : 'DEACTIVATED'}.`);
+        // We'll need to update the button's appearance, which requires a reference to it.
+        // This will be handled by restructuring the button creation slightly.
+        this.updateDefendButton(gameScene.defenseModeActive);
         break;
     }
   }
@@ -411,7 +855,20 @@ export class UIScene extends Phaser.Scene {
             btn.on('pointerdown', () => {
               craftingSystem.setBuildMode(true, recipe.id);
               this.closeBuildMenu();
-              this.addEventLogEntry(`Build mode: ${recipe.name}`);
+              this.addEventLogEntry(`Build mode activated for: ${recipe.name}. Click on map to place.`);
+            });
+          } else {
+            btn.on('pointerdown', () => {
+              const missing: string[] = [];
+              for (const [res, amt] of Object.entries(recipe.requirements)) {
+                if (!gameScene.getResourceManager().hasResource(res, amt)) {
+                  const current = gameScene.getResourceManager().getResource(res);
+                  missing.push(`${amt - current} ${res}`);
+                }
+              }
+              if (missing.length > 0) {
+                this.addEventLogEntry(`Cannot build ${recipe.name}. Missing: ${missing.join(', ')}.`);
+              }
             });
           }
         });
@@ -537,7 +994,7 @@ export class UIScene extends Phaser.Scene {
     this.showTooltip(txt, x, y);
   }
 
-  private refreshSurvivors() {
+  private updateSurvivorPanel() {
     const gs = this.scene.get('GameScene') as any;
     const sm = gs?.getSurvivorManager?.();
     if (!sm) return;
@@ -549,7 +1006,17 @@ export class UIScene extends Phaser.Scene {
 
     let y = 0;
     list.forEach((s: any) => {
-      const rowBg = this.add.rectangle(110, y + 14, 200, 28, 0x233242, 0.6).setDepth(110);
+      const isSelected = s.id === this.selectedSurvivorId;
+      const rowBg = this.add.rectangle(110, y + 14, 200, 28, isSelected ? 0x34495e : 0x233242, 0.8)
+        .setStrokeStyle(1, isSelected ? 0xecf0f1 : 0x34495e)
+        .setDepth(110)
+        .setInteractive({ useHandCursor: true })
+        .on('pointerdown', () => {
+          this.selectedSurvivorId = s.id;
+          sm.selectSurvivor(s.id);
+          this.updateSurvivorPanel(); // Redraw to show selection and details
+        });
+
       const name = this.add.text(6, y + 4, s.name, {
         fontSize: '11px', color: '#ecf0f1', fontFamily: this.fontFamily
       }).setDepth(111);
@@ -568,6 +1035,59 @@ export class UIScene extends Phaser.Scene {
       this.survivorListContainer.add([rowBg, name, mood, task]);
       y += 32;
     });
+
+    // Update details view if a survivor is selected
+    if (this.selectedSurvivorId) {
+      this.showSurvivorDetails(this.selectedSurvivorId);
+    } else {
+      this.survivorDetailContainer.setVisible(false);
+    }
+  }
+
+  private showSurvivorDetails(survivorId: string) {
+    const gs = this.scene.get('GameScene') as any;
+    const sm = gs?.getSurvivorManager?.();
+    const survivor = sm?.getSurvivor?.(survivorId);
+    if (!survivor) {
+      this.survivorDetailContainer.setVisible(false);
+      return;
+    }
+
+    this.survivorDetailContainer.removeAll(true);
+    this.survivorDetailContainer.setVisible(true);
+
+    const { name, background, health, sanity, hunger, skills, task } = survivor;
+
+    // Reposition based on list height
+    const listHeight = this.survivorListContainer.getBounds().height;
+    this.survivorDetailContainer.setY(listHeight + 10);
+
+    const detailBg = this.add.rectangle(110, 100, 200, 200, 0x1a2833, 0.9)
+        .setOrigin(0.5, 0);
+    this.survivorDetailContainer.add(detailBg);
+
+    let y = 10;
+    const addText = (label: string, value: string, color = '#ecf0f1') => {
+        this.survivorDetailContainer.add(this.add.text(10, y, `${label}:`, { fontSize: '10px', color: '#bdc3c7', fontFamily: this.fontFamily }));
+        this.survivorDetailContainer.add(this.add.text(100, y, value, { fontSize: '10px', color: color, fontFamily: this.fontFamily }));
+        y += 14;
+    };
+
+    addText('Name', name);
+    addText('Health', `${health}/100`, health > 50 ? '#2ecc71' : '#e74c3c');
+    addText('Sanity', `${sanity}/100`, sanity > 50 ? '#3498db' : '#f39c12');
+    addText('Hunger', `${hunger}/100`, hunger < 50 ? '#2ecc71' : '#e67e22');
+    y += 5;
+    addText('Task', task ? task.type : 'idle');
+    addText('Background', background.name);
+    y += 5;
+
+    // Skills
+    this.survivorDetailContainer.add(this.add.text(10, y, 'Skills:', { fontSize: '11px', color: '#ecf0f1', fontFamily: this.fontFamily }));
+    y += 16;
+    for (const [skill, level] of Object.entries(skills)) {
+        addText(`- ${skill}`, `${level}`);
+    }
   }
 
   private refreshBuildBars() {

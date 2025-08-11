@@ -259,6 +259,18 @@ export class EventManager {
             ]
           }
         ]
+      },
+      {
+        id: 'usda_raid',
+        title: 'USDA Zoning Raid',
+        description: 'The USDA has flagged your settlement for numerous violations. An enforcement team has been dispatched!',
+        type: 'faction',
+        severity: 'critical',
+        effects: [
+            { type: 'spawn_raid', target: 'usda', value: 3, description: 'A USDA enforcement team is raiding your base.' },
+            { type: 'relationship', target: 'usda', value: -20, description: ''}
+        ],
+        triggerConditions: ['conspiracy_heat >= 50']
       }
     ];
   }
@@ -469,7 +481,12 @@ export class EventManager {
     }
 
     // Apply conspiracy heat effects
-    if (this.conspiracyHeat > 80) {
+    if (this.conspiracyHeat > 75) {
+      if (Math.random() < 0.002) { // Increased chance for major event
+        this.triggerSpecificEvent('usda_raid');
+      }
+    }
+    else if (this.conspiracyHeat > 50) {
       // High conspiracy heat - more government attention
       if (Math.random() < 0.001) {
         this.triggerSpecificEvent('hoa_inspection');

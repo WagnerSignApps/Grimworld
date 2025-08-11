@@ -346,9 +346,12 @@ export class FactionManager {
   damageUnit(unitId: string, amount: number) {
     const unit = this.factionUnits.get(unitId);
     if (!unit) return;
+
     unit.health = Math.max(0, unit.health - amount);
-    unit.sprite.setAlpha(unit.health > 0 ? 1 : 0.5);
+    this.scene.events.emit('unitDamaged', { unit, damage: amount });
+
     if (unit.health <= 0) {
+      this.scene.events.emit('unitDied', { unit });
       unit.sprite.destroy();
       this.factionUnits.delete(unitId);
       // also remove from owning faction list
@@ -356,6 +359,10 @@ export class FactionManager {
       if (faction) {
         faction.units = faction.units.filter(u => u.id !== unitId);
       }
+    } else {
+        // flash red
+        unit.sprite.setTintFill(0xff0000);
+        this.scene.time.delayedCall(100, () => unit.sprite.clearTint());
     }
   }
 
